@@ -11,9 +11,35 @@
 #include <openssl/hmac.h>
 #include <openssl/aes.h>
 #include <openssl/evp.h>
+#include <openssl/opensslv.h>
 
 #define CHUNKNO(oft, info) ((uint32_t)((oft)/info->blockSize))
 #define CHUNKOFFSET(oft, info) ((size_t)((oft) - ((off_t)(CHUNKNO(oft, info)) * (off_t)info->blockSize)))
+
+static HMAC_CTX* fvHmacCtxNew(void) {
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
+	HMAC_CTX* ctx = (HMAC_CTX*) malloc(sizeof(HMAC_CTX));
+	if(ctx == NULL) {
+		return NULL;
+	}
+	HMAC_CTX_init(ctx);
+	return ctx;
+#else
+	return HMAC_CTX_new();
+#endif
+}
+
+static void fvHmacCtxFree(HMAC_CTX* ctx) {
+	if(ctx == NULL) {
+		return;
+	}
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
+	HMAC_CTX_cleanup(ctx);
+	free(ctx);
+#else
+	HMAC_CTX_free(ctx);
+#endif
+}
 
 static void flipFileVaultV2Header(FileVaultV2Header* header) {
 	FLIPENDIAN(header->signature);
@@ -51,9 +77,9 @@ static void writeChunk(FileVaultInfo* info) {
 	myChunk = info->curChunk;
 
 	FLIPENDIAN(myChunk);
-	HMAC_Init_ex(&(info->hmacCTX), NULL, 0, NULL, NULL);
-	HMAC_Update(&(info->hmacCTX), (unsigned char *) &myChunk, sizeof(uint32_t));
-	HMAC_Final(&(info->hmacCTX), msgDigest, &msgDigestLen);
+	HMAC_Init_ex(info->hmacCTX, NULL, 0, NULL, NULL);
+	HMAC_Update(info->hmacCTX, (unsigned char *) &myChunk, sizeof(uint32_t));
+	HMAC_Final(info->hmacCTX, msgDigest, &msgDigestLen);
 
 	AES_cbc_encrypt(info->chunk, buffer, info->blockSize, &(info->aesEncKey), msgDigest, AES_ENCRYPT);
 
@@ -85,9 +111,9 @@ static void cacheChunk(FileVaultInfo* info, uint32_t chunk) {
 	info->curChunk = chunk;
 
 	FLIPENDIAN(chunk);
-	HMAC_Init_ex(&(info->hmacCTX), NULL, 0, NULL, NULL);
-	HMAC_Update(&(info->hmacCTX), (unsigned char *) &chunk, sizeof(uint32_t));
-	HMAC_Final(&(info->hmacCTX), msgDigest, &msgDigestLen);
+	HMAC_Init_ex(info->hmacCTX, NULL, 0, NULL, NULL);
+	HMAC_Update(info->hmacCTX, (unsigned char *) &chunk, sizeof(uint32_t));
+	HMAC_Final(info->hmacCTX, msgDigest, &msgDigestLen);
 
 	AES_cbc_encrypt(buffer, info->chunk, info->blockSize, &(info->aesKey), msgDigest, AES_DECRYPT);
 }
@@ -177,7 +203,7 @@ void fvClose(AbstractFile* file) {
 		cacheChunk(info, 0);
 	}
 
-	HMAC_CTX_cleanup(&(info->hmacCTX));
+	fvHmacCtxFree(info->hmacCTX);
 
 	if(info->headerDirty) {
 		if(info->version == 2) {
@@ -234,8 +260,14 @@ AbstractFile* createAbstractFileFromFileVault(AbstractFile* file, const char* ke
 		hmacKey[i] = curByte;
 	}
 
-	HMAC_CTX_init(&(info->hmacCTX));
-	HMAC_Init_ex(&(info->hmacCTX), hmacKey, sizeof(hmacKey), EVP_sha1(), NULL);
+	info->hmacCTX = fvHmacCtxNew();
+	if(info->hmacCTX == NULL) {
+		free(info);
+		free(toReturn);
+		return NULL;
+	}
+
+	HMAC_Init_ex(info->hmacCTX, hmacKey, sizeof(hmacKey), EVP_sha1(), NULL);
 	AES_set_decrypt_key(aesKey, FILEVAULT_CIPHER_KEY_LENGTH * 8, &(info->aesKey));
 	AES_set_encrypt_key(aesKey, FILEVAULT_CIPHER_KEY_LENGTH * 8, &(info->aesEncKey));
 
