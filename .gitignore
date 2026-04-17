@@ -1,0 +1,9 @@
+**/CMakeFiles/**
+*.a
+cmake_install.cmake
+Makefile
+dmg/dmg
+hdutil/hdutil
+hfs/hfsplus
+install_manifest.txt
+CMakeCache.txt
