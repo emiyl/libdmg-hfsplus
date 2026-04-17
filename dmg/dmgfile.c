@@ -220,6 +220,7 @@ io_func* openDmgFilePartition(AbstractFile* abstractIn, int partition) {
 	DriverDescriptorRecord* ddm;
 	int numPartitions;
 	int i;
+	int found;
 	unsigned int BlockSize;
 
 	toReturn = openDmgFile(abstractIn);
@@ -228,30 +229,72 @@ io_func* openDmgFilePartition(AbstractFile* abstractIn, int partition) {
 		return NULL;
 	}
 
-	toReturn->read(toReturn, 0, SECTOR_SIZE, ddmBuffer);
+	if(!toReturn->read(toReturn, 0, SECTOR_SIZE, ddmBuffer)) {
+		toReturn->close(toReturn);
+		return NULL;
+	}
 	ddm = (DriverDescriptorRecord*) ddmBuffer;
 	flipDriverDescriptorRecord(ddm, FALSE);
+	if(ddm->sbSig != DRIVER_DESCRIPTOR_SIGNATURE || ddm->sbBlkSize == 0) {
+		return toReturn;
+	}
+
 	BlockSize = ddm->sbBlkSize;
+	if(BlockSize < sizeof(Partition)) {
+		return toReturn;
+	}
 
 	partitions = (Partition*) malloc(BlockSize);
-	toReturn->read(toReturn, BlockSize, BlockSize, partitions);
+	if(partitions == NULL) {
+		toReturn->close(toReturn);
+		return NULL;
+	}
+
+	if(!toReturn->read(toReturn, BlockSize, BlockSize, partitions)) {
+		free(partitions);
+		return toReturn;
+	}
+
 	flipPartitionMultiple(partitions, FALSE, FALSE, BlockSize);
 	numPartitions = partitions->pmMapBlkCnt;
+	if(numPartitions <= 0) {
+		free(partitions);
+		return toReturn;
+	}
+
 	partitions = (Partition*) realloc(partitions, numPartitions * BlockSize);
-	toReturn->read(toReturn, BlockSize, numPartitions * BlockSize, partitions);
+	if(partitions == NULL) {
+		toReturn->close(toReturn);
+		return NULL;
+	}
+
+	if(!toReturn->read(toReturn, BlockSize, numPartitions * BlockSize, partitions)) {
+		free(partitions);
+		return toReturn;
+	}
+
 	flipPartition(partitions, FALSE, BlockSize);
 
 	if(partition >= 0) {
-		((DMG*)toReturn->data)->offset = partitions[partition].pmPyPartStart * BlockSize;
+		if(partition < numPartitions) {
+			((DMG*)toReturn->data)->offset = partitions[partition].pmPyPartStart * BlockSize;
+		}
 	} else {
+		found = FALSE;
 		for(i = 0; i < numPartitions; i++) {
-			if(strcmp((char*)partitions->pmParType, "Apple_HFSX") == 0 || strcmp((char*)partitions->pmParType, "Apple_HFS") == 0) {
-				((DMG*)toReturn->data)->offset = partitions->pmPyPartStart * BlockSize;
+			if(strcmp((char*)partitions[i].pmParType, "Apple_HFSX") == 0 || strcmp((char*)partitions[i].pmParType, "Apple_HFS") == 0) {
+				((DMG*)toReturn->data)->offset = partitions[i].pmPyPartStart * BlockSize;
+				found = TRUE;
 				break;
 			}
-			partitions = (Partition*)((uint8_t*)partitions + BlockSize);
+		}
+
+		if(!found) {
+			((DMG*)toReturn->data)->offset = 0;
 		}
 	}
+
+	free(partitions);
 
 	return toReturn;
 }
